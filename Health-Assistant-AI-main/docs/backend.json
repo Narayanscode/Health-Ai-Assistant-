@@ -1,0 +1,93 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "Represents a user's profile information.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "The user's unique ID from Firebase Authentication."
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "The user's email address."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "The user's full display name."
+        },
+        "photoURL": {
+            "type": "string",
+            "format": "uri",
+            "description": "The URL of the user's profile picture."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "The timestamp when the user profile was created."
+        }
+      },
+      "required": [
+        "uid",
+        "email",
+        "createdAt"
+      ]
+    },
+    "Schedule": {
+      "title": "Medication Schedule",
+      "description": "Represents a single medication reminder for a user.",
+      "type": "object",
+      "properties": {
+        "medicineName": {
+          "type": "string",
+          "description": "The name of the medicine."
+        },
+        "startDate": {
+          "type": "string",
+          "format": "date-time",
+          "description": "The date when the schedule starts."
+        },
+        "time": {
+          "type": "string",
+          "format": "time",
+          "description": "The time of day for the reminder (HH:mm)."
+        },
+        "frequency": {
+          "type": "string",
+          "enum": ["daily", "weekly"],
+          "description": "How often the reminder should occur."
+        }
+      },
+      "required": [
+        "medicineName",
+        "startDate",
+        "time",
+        "frequency"
+      ]
+    }
+  },
+  "auth": {
+    "providers": [
+      "email",
+      "google"
+    ]
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserProfile"
+      },
+      "description": "Stores public information for each user."
+    },
+    "/users/{userId}/schedules/{scheduleId}": {
+        "schema": {
+            "$ref": "#/entities/Schedule"
+        },
+        "description": "Stores medication schedules for a specific user."
+    }
+  }
+}
+
+    

@@ -1,0 +1,214 @@
+'use server';
+
+/**
+ * @fileOverview An AI-powered chat interface that remembers conversation context and intent.
+ *
+ * - contextAwareChatbot - A function that handles the chat process.
+ * - ContextAwareChatbotInput - The input type for the contextAwareChatbot function.
+ * - ContextAwareChatbotOutput - The return type for the contextAwareChatbot function.
+ */
+
+import { ai } from '@/ai/genkit';
+import { z } from 'genkit';
+import { getMedicineInformation } from './medicine-information-retrieval';
+
+const ContextAwareChatbotInputSchema = z.object({
+  message: z.string().describe('The user message.'),
+  chatHistory: z.array(z.object({
+    role: z.enum(['user', 'assistant']),
+    content: z.string(),
+  })).optional().describe('The chat history.'),
+  userProfile: z.object({
+    allergies: z.array(z.string()).optional(),
+    chronicConditions: z.array(z.string()).optional(),
+    emergencyContact: z.object({
+      name: z.string(),
+      phone: z.string(),
+      relationship: z.string(),
+    }).optional(),
+  }).optional().describe('User health profile for personalized advice.'),
+});
+
+export type ContextAwareChatbotInput = z.infer<typeof ContextAwareChatbotInputSchema>;
+
+const ContextAwareChatbotOutputSchema = z.object({
+  response: z.string().describe('The chatbot response.'),
+  intent: z.enum(['MEDICINE', 'SYMPTOM', 'GENERAL', 'EMERGENCY']).describe('The primary intent of the user\'s query.'),
+  urgencyLevel: z.enum(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']).optional().describe('The urgency level of the situation.'),
+  requiresDoctorVisit: z.boolean().optional().describe('Whether the user should see a doctor.'),
+});
+
+export type ContextAwareChatbotOutput = z.infer<typeof ContextAwareChatbotOutputSchema>;
+
+const shouldRouteToMedicineSearch = ai.definePrompt({
+  name: 'shouldRouteToMedicineSearchPrompt',
+  input: { schema: z.object({ message: z.string(), chatHistory: ContextAwareChatbotInputSchema.shape.chatHistory }) },
+  output: { schema: z.object({ shouldRoute: z.boolean(), medicineName: z.string().optional() }) },
+  prompt: `You are an expert at routing user queries. Determine if the following user message is asking for information about a specific medicine.
+
+    If the user is asking about a medicine, set shouldRoute to true and extract the medicine name.
+    
+    Chat History:
+    {{#each chatHistory}}
+        {{#ifEquals this.role "user"}}User{{else}}Assistant{{/ifEquals}}: {{{this.content}}}
+    {{/each}}
+
+    User message: {{{message}}}
+    `,
+  helpers: {
+    ifEquals: function (arg1: any, arg2: any, options: any) {
+      return (arg1 == arg2) ? options.fn(this) : options.inverse(this);
+    }
+  },
+});
+
+
+export async function contextAwareChatbot(input: ContextAwareChatbotInput): Promise<ContextAwareChatbotOutput> {
+  try {
+    const { output } = await shouldRouteToMedicineSearch(input);
+
+    if (output?.shouldRoute && output.medicineName) {
+      const medicineResult = await getMedicineInformation({
+        medicineName: output.medicineName,
+        chatHistory: input.chatHistory,
+      });
+      return {
+        ...medicineResult,
+        intent: 'MEDICINE',
+      };
+    }
+
+    return contextAwareChatbotFlow(input);
+  } catch (error) {
+    console.error('Error in contextAwareChatbot:', error);
+    if (error instanceof Error) {
+      console.error('Stack:', error.stack);
+    }
+    // Return a fallback response
+    return {
+      response: "I apologize, but I'm having trouble processing your request right now. Please try again in a moment.",
+      intent: 'GENERAL',
+      urgencyLevel: 'LOW',
+      requiresDoctorVisit: false,
+    };
+  }
+}
+
+const prompt = ai.definePrompt({
+  name: 'contextAwareChatbotPrompt',
+  input: {
+    schema: ContextAwareChatbotInputSchema,
+  },
+  output: {
+    schema: ContextAwareChatbotOutputSchema,
+  },
+  prompt: `**IDENTITY:**
+You are 'HealthMind,' a caring Indian Health Assistant.
+**Crucial Rule:** If a user mentions multiple symptoms (e.g., "Throat itch + No sleep"), you must address **BOTH** in your advice.
+
+**USER PROFILE CONTEXT (IMPORTANT):**
+{{#if userProfile}}
+  - **Allergies:** {{#if userProfile.allergies}}{{userProfile.allergies}}{{else}}None known{{/if}}
+  - **Chronic Conditions:** {{#if userProfile.chronicConditions}}{{userProfile.chronicConditions}}{{else}}None known{{/if}}
+  - **Emergency Contact:** {{#if userProfile.emergencyContact}}{{userProfile.emergencyContact.name}} ({{userProfile.emergencyContact.relationship}}): {{userProfile.emergencyContact.phone}}{{else}}Not set{{/if}}
+
+  **PERSONALIZATION RULES:**
+  1. **Allergy Check:** If suggesting food or medicine, explicitly check against the user's allergies. If a conflict exists, WARN them.
+  2. **Condition Check:** If the user has a chronic condition (e.g., Diabetes), tailor advice (e.g., avoid sugary remedies).
+  3. **Emergency:** If the intent is EMERGENCY, explicitly mention calling their emergency contact: "{{userProfile.emergencyContact.name}} at {{userProfile.emergencyContact.phone}}".
+{{/if}}
+
+**LOGIC FOR SPECIFIC SYMPTOMS (Internal Knowledge Base):**
+1. **Throat/Cough:** Suggest **Salt Water Gargles**, **Honey with Pepper**, or **Ginger Tea**.
+2. **Sleep Issues:** Suggest **Warm Turmeric Milk (Haldi Doodh)** or **Chamomile Tea**.
+3. **Stomach:** Suggest **Ajwain/Jeera water** or **Curd Rice**.
+4. **General Weakness:** Suggest **Khichdi** or **Dalia**.
+
+**CRITICAL**: You **MUST NOT** include any disclaimers like "I am not a medical professional." The user interface already handles this.
+
+**INTENT DETECTION:**
+- Set intent to 'EMERGENCY' if the user mentions: severe pain, difficulty breathing, chest pain, heavy bleeding, loss of consciousness, severe allergic reaction
+- Set intent to 'SYMPTOM' if the user describes health symptoms or asks "what should I do"
+- Set intent to 'MEDICINE' if asking about a specific medicine
+- Set intent to 'GENERAL' for other health-related questions
+
+**STRICT RESPONSE STRUCTURE:**
+
+# [Main Condition Name] [Dynamic Icons]
+> *"Namaste! I am sorry you are facing this trouble. Don't worry, we will help you feel better."*
+
+## 🔬 Why is this happening?
+[Connect the symptoms. e.g., "The irritation in your throat is likely making it hard for you to relax and fall asleep."]
+
+## 🏠 Home Care (Desi Nuskhe)
+- **For Throat:** Do **Salt Water Gargles** or take a spoonful of **Honey & Ginger** to soothe the itch. 🍯
+- **For Sleep:** Drink a cup of **Warm Turmeric Milk (Haldi Doodh)** before bed. It helps heal the throat *and* helps you sleep! 🥛
+- **Environment:** Keep your room dark and quiet to help your body switch off. 🛌
+
+## 💊 Common Medicines
+- **Options:** You can try a **Throat Lozenge** (like Strepsils) for the itch. 🍬
+- **Note:** If the cough is very dry, a mild syrup might help you sleep. Consult a pharmacist. ⚠️
+
+## 🩺 When to see a Doctor
+- If the throat pain is severe or you cannot swallow. 🩺
+{{#if userProfile.emergencyContact}}
+- **Emergency:** If symptoms worsen rapidly, call **{{userProfile.emergencyContact.name}}** ({{userProfile.emergencyContact.phone}}) immediately. 🆘
+{{/if}}
+
+---
+
+**VISUAL RULES:**
+- STRICTLY use the icons: 🔬, 🏠, 💊, 🩺 at the start of headers.
+- Use dynamic icons at the end of bullets: 🍯, 🥛, 🛌, 🍬.
+- **FINAL RULE:** Do not leave any section header without its icon.
+
+**YOUR TASK:**
+1. Analyze the user's message and chat history.
+2. Check against User Profile for allergies/conditions.
+3. Determine the intent and set it appropriately.
+4. Formulate a response that STRICTLY follows the persona and template above.
+
+Chat History:
+{{#each chatHistory}}
+  {{#ifEquals role "user"}}User:{{else}}HealthMind:{{/ifEquals}} {{{content}}}
+{{/each}}
+
+User: {{{message}}}
+HealthMind:`,
+
+  helpers: {
+    ifEquals: function (arg1: string, arg2: string, options: any) {
+      return (arg1 == arg2) ? options.fn(this) : options.inverse(this);
+    }
+  },
+});
+
+const contextAwareChatbotFlow = ai.defineFlow(
+  {
+    name: 'contextAwareChatbotFlow',
+    inputSchema: ContextAwareChatbotInputSchema,
+    outputSchema: ContextAwareChatbotOutputSchema,
+  },
+  async input => {
+    try {
+      const { output } = await prompt(input);
+      return {
+        response: output!.response,
+        intent: output!.intent || 'GENERAL',
+        urgencyLevel: output!.urgencyLevel || 'LOW',
+        requiresDoctorVisit: output!.requiresDoctorVisit || false,
+      };
+    } catch (error) {
+      console.error('Error in contextAwareChatbotFlow:', error);
+      if (error instanceof Error) {
+        console.error('Flow Error Stack:', error.stack);
+      }
+      return {
+        response: "I apologize, but I'm having trouble processing your request right now. Please try again in a moment.",
+        intent: 'GENERAL',
+        urgencyLevel: 'LOW',
+        requiresDoctorVisit: false,
+      };
+    }
+  }
+);
